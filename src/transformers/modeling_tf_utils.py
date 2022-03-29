@@ -893,8 +893,10 @@ class TFPreTrainedModel(tf.keras.Model, TFModelUtilsMixin, TFGenerationMixin, Pu
         """
         if loss == "passthrough":
             if metrics is not None:
-                raise ValueError("Passing metrics as a dict is not supported when using the internal loss! "
-                                 "Please either specify a loss, or remove the metrics argument.")
+                raise ValueError(
+                    "Passing metrics as a dict is not supported when using the internal loss! "
+                    "Please either specify a loss, or remove the metrics argument."
+                )
             logger.warning(
                 "No loss specified in compile() - the model's internal loss computation will be used as the "
                 "loss. Don't panic - this is a common way to train TensorFlow models in Transformers! "
@@ -942,7 +944,14 @@ class TFPreTrainedModel(tf.keras.Model, TFModelUtilsMixin, TFGenerationMixin, Pu
         When using this "dummy loss", inputs can be passed either as keys in the input dictionary, or as normal Keras
         labels.
         """
-        possible_label_cols = {"labels", "label", "label_ids", "start_positions", "end_positions", "next_sentence_label"}
+        possible_label_cols = {
+            "labels",
+            "label",
+            "label_ids",
+            "start_positions",
+            "end_positions",
+            "next_sentence_label",
+        }
         # These are the only transformations `Model.fit` applies to user-input
         # data when a `tf.data.Dataset` is provided.
         data = data_adapter.expand_1d(data)
@@ -1009,7 +1018,14 @@ class TFPreTrainedModel(tf.keras.Model, TFModelUtilsMixin, TFGenerationMixin, Pu
         When using this "dummy loss", inputs can be passed either as keys in the input dictionary, or as normal Keras
         labels.
         """
-        possible_label_cols = {"labels", "label", "label_ids", "start_positions", "end_positions", "next_sentence_label"}
+        possible_label_cols = {
+            "labels",
+            "label",
+            "label_ids",
+            "start_positions",
+            "end_positions",
+            "next_sentence_label",
+        }
         # These are the only transformations `Model.fit` applies to user-input
         # data when a `tf.data.Dataset` is provided.
         data = data_adapter.expand_1d(data)
