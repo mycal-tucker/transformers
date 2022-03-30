@@ -107,7 +107,11 @@ def parse_args():
         "--model_name_or_path",
         type=str,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
-        required=True,
+    )
+    parser.add_argument(
+        "--lm_model_name_or_path",
+        type=str,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
         "--config_name",
@@ -200,6 +204,7 @@ def parse_args():
         "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
     )
     parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
+    parser.add_argument("--eval_only", action="store_true", help="Only do evaluation.")
     args = parser.parse_args()
 
     # Sanity checks
@@ -346,13 +351,18 @@ def _train_lm(args, probed_model, tokenizer, accelerator, raw_datasets):
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-    train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, accelerator)
+    train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, accelerator, tokenizer)
 
 
 def _train_probe(args, probed_model, tokenizer, accelerator, raw_datasets):
-    text_column_name = 'review'
-    label_column_name = 'sentiment'
-    label_mapping = {'positive': 1, 'negative': 0}
+    # For imdb
+    # text_column_name = 'review'
+    # label_column_name = 'sentiment'
+    # label_mapping = {'positive': 1, 'negative': 0}
+    # For wizard
+    text_column_name = 'text'
+    label_column_name = 'gender'
+    label_mapping = {0: 0, 1: 1, 2: 2}
 
     def tokenize_function(examples):
         tokenized_batch = tokenizer(examples[text_column_name])
@@ -378,10 +388,10 @@ def _train_probe(args, probed_model, tokenizer, accelerator, raw_datasets):
     tokenized_datasets = tokenized_datasets.rename_column(label_column_name, 'labels')
     train_dataset = tokenized_datasets["train"]
     eval_dataset = tokenized_datasets["validation"]
-    train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, accelerator)
+    train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, accelerator, tokenizer)
 
 
-def train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, accelerator):
+def train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, accelerator, tokenizer):
     # DataLoaders creation:
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=args.per_device_train_batch_size
@@ -444,28 +454,35 @@ def train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, 
     completed_steps = 0
 
     for epoch in range(args.num_train_epochs):
-        probed_model.train()
-        for step, batch in enumerate(train_dataloader):
-            outputs = probed_model(**batch)
-            loss = outputs.loss
-            loss = loss / args.gradient_accumulation_steps
-            accelerator.backward(loss)
-            if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
+        if not args.eval_only:
+            probed_model.train()
+            for step, batch in enumerate(train_dataloader):
+                outputs = probed_model(**batch)
+                loss = outputs.loss
+                loss = loss / args.gradient_accumulation_steps
+                accelerator.backward(loss)
+                if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
 
-            if completed_steps >= args.max_train_steps:
-                break
+                if completed_steps >= args.max_train_steps:
+                    break
 
         probed_model.eval()
         losses = []
         for step, batch in enumerate(eval_dataloader):
             with torch.no_grad():
                 outputs = probed_model(**batch)
-
+            if args.eval_only:
+                ids = batch['input_ids'].detach().cpu().numpy().tolist()[0]  # Convert tensor to flat list
+                text_version = tokenizer.decode(ids)
+                print("Input:\t\t", text_version)
+                print("Pred logits:\t", outputs.logits)
+                print("Label:\t\t", batch['labels'])
+                print()
             loss = outputs.loss
             losses.append(accelerator.gather(loss.repeat(args.per_device_eval_batch_size)))
 
@@ -477,6 +494,8 @@ def train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, 
             perplexity = float("inf")
 
         logger.info(f"epoch {epoch}: perplexity: {perplexity}")
+        if args.eval_only:
+            break  # Don't keep looping if you only evaluate once.
 
 def main():
     args = parse_args()
@@ -506,7 +525,10 @@ def main():
         set_seed(args.seed)
 
     lm_raw_datasets = _load_dataset(args, args.lm_dataset_name, args.lm_dataset_config_name)
-    probe_raw_datasets = _load_dataset(args, args.probe_dataset_name, args.probe_dataset_config_name, use_file=True)
+    # For imdb, use file
+    # probe_raw_datasets = _load_dataset(args, args.probe_dataset_name, args.probe_dataset_config_name, use_file=True)
+    # For wizard
+    probe_raw_datasets = _load_dataset(args, args.probe_dataset_name, args.probe_dataset_config_name)
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
@@ -515,56 +537,61 @@ def main():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    if args.config_name:
-        lm_config = AutoConfig.from_pretrained(args.config_name)
-    elif args.model_name_or_path:
-        lm_config = AutoConfig.from_pretrained(args.model_name_or_path)
-    else:
-        lm_config = CONFIG_MAPPING[args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-
-    if args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, use_fast=not args.use_slow_tokenizer)
-    elif args.model_name_or_path:
+    if args.model_name_or_path is not None:
+        probed_model = torch.load(args.model_name_or_path + '/model.pt')
         tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer)
     else:
-        raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-        )
+        if args.config_name:
+            lm_config = AutoConfig.from_pretrained(args.config_name)
+        elif args.lm_model_name_or_path:
+            lm_config = AutoConfig.from_pretrained(args.lm_model_name_or_path)
+        else:
+            lm_config = CONFIG_MAPPING[args.model_type]()
+            logger.warning("You are instantiating a new config instance from scratch.")
 
-    if args.model_name_or_path:
-        lm_model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=lm_config,
-        )
-    else:
-        logger.info("Training new model from scratch")
-        lm_model = AutoModelForCausalLM.from_config(lm_config)
+        if args.tokenizer_name:
+            tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, use_fast=not args.use_slow_tokenizer)
+        elif args.lm_model_name_or_path:
+            tokenizer = AutoTokenizer.from_pretrained(args.lm_model_name_or_path, use_fast=not args.use_slow_tokenizer)
+        else:
+            raise ValueError(
+                "You are instantiating a new tokenizer from scratch. This is not supported by this script."
+                "You can do it from another script, save it, and load it from here, using --tokenizer_name."
+            )
 
-    lm_model.resize_token_embeddings(len(tokenizer))
-    copied = copy.deepcopy(lm_config)
-    copied.num_labels = 2
-    classifier_model = GPT2ForSequenceClassification(copied)
-    classifier_model.resize_token_embeddings(len(tokenizer))
+        if args.lm_model_name_or_path:
+            lm_model = AutoModelForCausalLM.from_pretrained(
+                args.lm_model_name_or_path,
+                from_tf=bool(".ckpt" in args.lm_model_name_or_path),
+                config=lm_config,
+            )
+        else:
+            logger.info("Training new model from scratch")
+            lm_model = AutoModelForCausalLM.from_config(lm_config)
 
-    probed_model = GPT2ProbedCLM(lm_config, lm_model, classifier_model)
-    for iteration in range(10):
+        lm_model.resize_token_embeddings(len(tokenizer))
+        copied = copy.deepcopy(lm_config)
+        copied.num_labels = 3  # FIXME. Works for Wizard, but not for example imdb
+        classifier_model = GPT2ForSequenceClassification(copied)
+        classifier_model.resize_token_embeddings(len(tokenizer))
+        probed_model = GPT2ProbedCLM(lm_config, lm_model, classifier_model)
+    # Do the actual training
+    for iteration in range(2):
         print("Iteration number", iteration)
-        # print("Training probe")
-        # probed_model.lm_mode = False
-        # _train_probe(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
-        print("Training LM")
-        probed_model.lm_mode = True
-        _train_lm(args, probed_model, tokenizer, accelerator, lm_raw_datasets)
-
+        print("Training probe")
+        probed_model.lm_mode = False
+        _train_probe(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
+        # print("Training LM")
+        # probed_model.lm_mode = True
+        # _train_lm(args, probed_model, tokenizer, accelerator, lm_raw_datasets)
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(probed_model)
         unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
+        torch.save(unwrapped_model, args.output_dir + "/model.pt")
+
 
 
 if __name__ == "__main__":
