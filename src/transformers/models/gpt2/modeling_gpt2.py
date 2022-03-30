@@ -1386,7 +1386,9 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
+        mean_repr = hidden_states.mean(dim=1)
         logits = self.score(hidden_states)
+
 
         if input_ids is not None:
             batch_size, sequence_length = input_ids.shape[:2]
@@ -1407,8 +1409,11 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
                     f"{self.__class__.__name__} will not detect padding tokens in `inputs_embeds`. Results may be "
                     f"unexpected if using padding tokens in conjunction with `inputs_embeds.`"
                 )
-
-        pooled_logits = logits[torch.arange(batch_size, device=self.device), sequence_lengths]
+        # Normally, we pull out the last token and use logits from that.
+        # But I'm experimenting with just using the mean.
+        # pooled_logits = logits[torch.arange(batch_size, device=self.device), sequence_lengths]
+        mean_logits = self.score(mean_repr)
+        pooled_logits = mean_logits
 
         loss = None
         if labels is not None:
