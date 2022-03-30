@@ -597,6 +597,7 @@ PT_SAMPLE_DOCSTRINGS = {
     "MultipleChoice": PT_MULTIPLE_CHOICE_SAMPLE,
     "MaskedLM": PT_MASKED_LM_SAMPLE,
     "LMHead": PT_CAUSAL_LM_SAMPLE,
+    "ProbedLM": PT_CAUSAL_LM_SAMPLE,
     "BaseModel": PT_BASE_MODEL_SAMPLE,
     "SpeechBaseModel": PT_SPEECH_BASE_MODEL_SAMPLE,
     "CTC": PT_SPEECH_CTC_SAMPLE,
@@ -984,6 +985,8 @@ def add_code_sample_docstrings(
             code_sample = sample_docstrings["MaskedLM"]
         elif "LMHead" in model_class or "CausalLM" in model_class:
             code_sample = sample_docstrings["LMHead"]
+        elif "ProbedCLM" in model_class or "CausalLM" in model_class:
+            code_sample = sample_docstrings["ProbedLM"]
         elif "CTC" in model_class:
             code_sample = sample_docstrings["CTC"]
         elif "AudioFrameClassification" in model_class:

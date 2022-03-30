@@ -26,7 +26,6 @@ from packaging import version
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-
 if version.parse(torch.__version__) >= version.parse("1.6"):
     is_amp_available = True
     from torch.cuda.amp import autocast
@@ -57,7 +56,6 @@ from ...utils import (
 )
 from ...utils.model_parallel_utils import assert_device_map, get_device_map
 from .configuration_gpt2 import GPT2Config
-
 
 logger = logging.get_logger(__name__)
 
@@ -122,7 +120,7 @@ def load_tf_weights_in_gpt2(model, config, gpt2_checkpoint_path):
                 pointer = pointer[num]
         try:
             assert (
-                pointer.shape == array.shape
+                    pointer.shape == array.shape
             ), f"Pointer shape {pointer.shape} and array shape {array.shape} mismatched"
         except AssertionError as e:
             e.args += (pointer.shape, array.shape)
@@ -202,7 +200,7 @@ class GPT2Attention(nn.Module):
         if not self.is_cross_attention:
             # if only "normal" attention layer implements causal mask
             query_length, key_length = query.size(-2), key.size(-2)
-            causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length].bool()
+            causal_mask = self.bias[:, :, key_length - query_length: key_length, :key_length].bool()
             attn_weights = torch.where(causal_mask, attn_weights, self.masked_bias.to(attn_weights.dtype))
 
         if attention_mask is not None:
@@ -253,7 +251,7 @@ class GPT2Attention(nn.Module):
         if not self.is_cross_attention:
             # if only "normal" attention layer implements causal mask
             query_length, key_length = query.size(-2), key.size(-2)
-            causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length].bool()
+            causal_mask = self.bias[:, :, key_length - query_length: key_length, :key_length].bool()
             attn_weights = torch.where(causal_mask, attn_weights, self.masked_bias.to(attn_weights.dtype))
 
         if attention_mask is not None:
@@ -293,15 +291,15 @@ class GPT2Attention(nn.Module):
         return tensor.view(new_shape)
 
     def forward(
-        self,
-        hidden_states,
-        layer_past=None,
-        attention_mask=None,
-        head_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        use_cache=False,
-        output_attentions=False,
+            self,
+            hidden_states,
+            layer_past=None,
+            attention_mask=None,
+            head_mask=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            use_cache=False,
+            output_attentions=False,
     ):
         if encoder_hidden_states is not None:
             if not hasattr(self, "q_attn"):
@@ -380,15 +378,15 @@ class GPT2Block(nn.Module):
         self.mlp = GPT2MLP(inner_dim, config)
 
     def forward(
-        self,
-        hidden_states,
-        layer_past=None,
-        attention_mask=None,
-        head_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        use_cache=False,
-        output_attentions=False,
+            self,
+            hidden_states,
+            layer_past=None,
+            attention_mask=None,
+            head_mask=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            use_cache=False,
+            output_attentions=False,
     ):
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
@@ -742,20 +740,20 @@ class GPT2Model(GPT2PreTrainedModel):
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
-        self,
-        input_ids=None,
-        past_key_values=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+            self,
+            input_ids=None,
+            past_key_values=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1020,21 +1018,21 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
-        self,
-        input_ids=None,
-        past_key_values=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+            self,
+            input_ids=None,
+            past_key_values=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            labels=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
     ):
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1189,22 +1187,22 @@ class GPT2DoubleHeadsModel(GPT2PreTrainedModel):
     @add_start_docstrings_to_model_forward(GPT2_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=GPT2DoubleHeadsModelOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
-        self,
-        input_ids=None,
-        past_key_values=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        mc_token_ids=None,
-        labels=None,
-        mc_labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        **kwargs,
+            self,
+            input_ids=None,
+            past_key_values=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            mc_token_ids=None,
+            labels=None,
+            mc_labels=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+            **kwargs,
     ):
         r"""
         mc_token_ids (`torch.LongTensor` of shape `(batch_size, num_choices)`, *optional*, default to index of the last token of the input):
@@ -1352,19 +1350,19 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
-        self,
-        input_ids=None,
-        past_key_values=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+            self,
+            input_ids=None,
+            past_key_values=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            labels=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
     ):
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1396,7 +1394,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
             batch_size, sequence_length = inputs_embeds.shape[:2]
 
         assert (
-            self.config.pad_token_id is not None or batch_size == 1
+                self.config.pad_token_id is not None or batch_size == 1
         ), "Cannot handle batch sizes > 1 if no padding token is defined."
         if self.config.pad_token_id is None:
             sequence_lengths = -1
@@ -1484,19 +1482,19 @@ class GPT2ForTokenClassification(GPT2PreTrainedModel):
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
-        self,
-        input_ids=None,
-        past_key_values=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+            self,
+            input_ids=None,
+            past_key_values=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            labels=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
     ):
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1539,3 +1537,63 @@ class GPT2ForTokenClassification(GPT2PreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
+
+
+@add_start_docstrings(
+    """
+    The GPT2 Model transformer for both causal language modeling (CLM) and a probing task on the sequence (e.g.,
+    sentiment analysis).
+
+    It just wraps a language model and a classifier and delegates to the appropriate model. Crucially, though, the
+    models share the same transformer base.
+    """,
+    GPT2_START_DOCSTRING,
+)
+class GPT2ProbedCLM(GPT2PreTrainedModel):
+    def __init__(self, config, lm, classifier):
+        super().__init__(config)
+        self.transformer = lm.transformer
+        self.classifier = classifier
+        self.lm = lm
+        self.classifier.transformer = self.transformer  # Share the transformer across models
+
+        self.lm_mode = True
+
+    def forward(self,
+                input_ids=None,
+                past_key_values=None,
+                attention_mask=None,
+                token_type_ids=None,
+                position_ids=None,
+                head_mask=None,
+                inputs_embeds=None,
+                labels=None,
+                use_cache=None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None, ):
+        if self.lm_mode:
+            return self.lm(input_ids=input_ids,
+                           past_key_values=past_key_values,
+                           attention_mask=attention_mask,
+                           token_type_ids=token_type_ids,
+                           position_ids=position_ids,
+                           head_mask=head_mask,
+                           inputs_embeds=inputs_embeds,
+                           labels=labels,
+                           use_cache=use_cache,
+                           output_attentions=output_attentions,
+                           output_hidden_states=output_hidden_states,
+                           return_dict=return_dict)
+        return self.classifier(input_ids=input_ids,
+                               past_key_values=past_key_values,
+                               attention_mask=attention_mask,
+                               token_type_ids=token_type_ids,
+                               position_ids=position_ids,
+                               head_mask=head_mask,
+                               inputs_embeds=inputs_embeds,
+                               labels=labels,
+                               use_cache=use_cache,
+                               output_attentions=output_attentions,
+                               output_hidden_states=output_hidden_states,
+                               return_dict=return_dict)
