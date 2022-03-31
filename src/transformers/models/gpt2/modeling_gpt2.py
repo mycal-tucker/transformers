@@ -1334,6 +1334,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
         self.num_labels = config.num_labels
         self.transformer = GPT2Model(config)
         self.score = nn.Linear(config.n_embd, self.num_labels, bias=False)
+        self.classifier = MeanClassifier(self.score)
 
         # Model parallel
         self.model_parallel = False
@@ -1386,8 +1387,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
-        mean_repr = hidden_states.mean(dim=1)
-        logits = self.score(hidden_states)
+        # logits = self.score(hidden_states)
 
 
         if input_ids is not None:
@@ -1412,8 +1412,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
         # Normally, we pull out the last token and use logits from that.
         # But I'm experimenting with just using the mean.
         # pooled_logits = logits[torch.arange(batch_size, device=self.device), sequence_lengths]
-        mean_logits = self.score(mean_repr)
-        pooled_logits = mean_logits
+        pooled_logits = self.classifier(hidden_states)
 
         loss = None
         if labels is not None:
@@ -1448,6 +1447,16 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
+
+
+class MeanClassifier(nn.Module):
+    def __init__(self, linear_layer):
+        super().__init__()
+        self.layer = linear_layer
+
+    def forward(self, x):
+        mean = x.mean(dim=1)
+        return self.layer(mean)
 
 
 @add_start_docstrings(

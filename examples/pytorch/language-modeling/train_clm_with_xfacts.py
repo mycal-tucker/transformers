@@ -56,6 +56,7 @@ from transformers.utils import get_full_repo_name
 from transformers.utils.versions import require_version
 # Hardcoded to use the type I want
 from transformers.models.gpt2.modeling_gpt2 import GPT2ProbedCLM, GPT2ForSequenceClassification
+from transformers.utils.gen_xfactuals import gen_counterfactual
 
 
 logger = logging.getLogger(__name__)
@@ -497,6 +498,84 @@ def train_with_prepped_dataset(train_dataset, eval_dataset, probed_model, args, 
         if args.eval_only:
             break  # Don't keep looping if you only evaluate once.
 
+
+def _gen_xfacts(args, probed_model, tokenizer, accelerator, raw_datasets):
+    # Given a sentence with, create counterfactuals for different genders and keep the original input
+    # ids, so we end up creating a dataset of different embeddings all being supervised to the same next word
+    # prediction.
+    # Same prep as for training the probe.
+    # For wizard
+    text_column_name = 'text'
+    label_column_name = 'gender'
+    label_mapping = {0: 0, 1: 1, 2: 2}
+
+    def tokenize_function(examples):
+        tokenized_batch = tokenizer(examples[text_column_name])
+        return tokenized_batch
+
+    def label_to_int(batch):
+        batch[label_column_name] = [label_mapping[label] for label in batch[label_column_name]]
+        return batch
+
+    def too_long(batch):
+        return len(batch['input_ids']) < tokenizer.model_max_length
+
+    with accelerator.main_process_first():
+        tokenized_datasets = raw_datasets.map(
+            tokenize_function,
+            batched=True,
+            num_proc=args.preprocessing_num_workers,
+            load_from_cache_file=not args.overwrite_cache,
+            desc="Running tokenizer on dataset",
+        )
+    tokenized_datasets = tokenized_datasets.map(label_to_int, batched=True)
+    tokenized_datasets = tokenized_datasets.filter(too_long, batched=False)
+    tokenized_datasets = tokenized_datasets.rename_column(label_column_name, 'labels')
+    train_dataset = tokenized_datasets["train"]
+    print(next(iter(train_dataset)))
+    eval_dataset = tokenized_datasets["validation"]
+    # DataLoaders creation:
+    train_dataloader = DataLoader(
+        train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=args.per_device_train_batch_size
+    )
+    eval_dataloader = DataLoader(
+        eval_dataset, collate_fn=default_data_collator, batch_size=args.per_device_eval_batch_size
+    )
+    probed_model, train_dataloader, eval_dataloader = accelerator.prepare(
+        probed_model, train_dataloader, eval_dataloader
+    )
+    completed_steps = 0
+    probed_model.train()
+    probe = probed_model.classifier.classifier
+    cached_input_ids = []
+    cached_z_primes = []
+    for step, batch in enumerate(train_dataloader):
+        batch['output_hidden_states'] = True
+        with torch.no_grad():
+            outputs = probed_model(**batch)
+        hidden_states = outputs.hidden_states[-1].detach()  # Take last ones before the linear layer.
+        s_prime = torch.Tensor([1]).long().cuda()  # FIXME
+        z_prime = gen_counterfactual(hidden_states, probe, s_prime)
+        # We generate input ids and xfactual embeddings for the whole sequence, but one has to decide what parts to
+        # add to the dataset.
+        # E.g., doing the whole sequence is one option, but that's odd because it removes all info.
+        # So, here we just use the last element (well, one earlier to not just do punctuation)
+        # Old version for the whole sequence
+        # cached_input_ids.append(batch['input_ids'].view((-1, 1)))
+        # cached_z_primes.append(torch.squeeze(z_prime, dim=0))
+        # Minus 2 for the penultimate token.
+        cached_input_ids.append(batch['input_ids'][0, -2].view((-1, 1)))
+        cached_z_primes.append(z_prime[0, -2].view(1, -1))
+        # Debugging tool prints out the token being added to the dataset
+        # print("Decoding token", tokenizer.decode(cached_input_ids[-1][0]))
+        completed_steps += 1
+        if completed_steps >= args.max_train_steps:
+            break
+    stacked_z_primes = torch.vstack(cached_z_primes)
+    stacked_input_ids = torch.vstack(cached_input_ids)
+    xfact_dataset = torch.utils.data.TensorDataset(stacked_z_primes, stacked_input_ids)
+    return xfact_dataset
+
 def main():
     args = parse_args()
 
@@ -584,6 +663,11 @@ def main():
         # print("Training LM")
         # probed_model.lm_mode = True
         # _train_lm(args, probed_model, tokenizer, accelerator, lm_raw_datasets)
+        print("Generating xfacts")
+        probed_model.lm_mode = False
+        xfact_dataset = _gen_xfacts(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
+        print("Training with xfacts")
+        # TODO.
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(probed_model)
