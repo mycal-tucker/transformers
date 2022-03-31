@@ -22,6 +22,7 @@ https://huggingface.co/models?filter=text-generation
 """
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
+from torch.nn import CrossEntropyLoss
 import argparse
 import copy
 import logging
@@ -518,7 +519,7 @@ def _gen_xfacts(args, probed_model, tokenizer, accelerator, raw_datasets):
         return batch
 
     def too_long(batch):
-        return len(batch['input_ids']) < tokenizer.model_max_length
+        return 3 < len(batch['input_ids']) < tokenizer.model_max_length
 
     with accelerator.main_process_first():
         tokenized_datasets = raw_datasets.map(
@@ -565,7 +566,7 @@ def _gen_xfacts(args, probed_model, tokenizer, accelerator, raw_datasets):
         # cached_z_primes.append(torch.squeeze(z_prime, dim=0))
         # Minus 2 for the penultimate token.
         cached_input_ids.append(batch['input_ids'][0, -2].view((-1, 1)))
-        cached_z_primes.append(z_prime[0, -2].view(1, -1))
+        cached_z_primes.append(z_prime[0, -3].view(1, -1))  # Shift z-prime by one earlier to allow prediction.
         # Debugging tool prints out the token being added to the dataset
         # print("Decoding token", tokenizer.decode(cached_input_ids[-1][0]))
         completed_steps += 1
@@ -575,6 +576,32 @@ def _gen_xfacts(args, probed_model, tokenizer, accelerator, raw_datasets):
     stacked_input_ids = torch.vstack(cached_input_ids)
     xfact_dataset = torch.utils.data.TensorDataset(stacked_z_primes, stacked_input_ids)
     return xfact_dataset
+
+
+def _xfact_training(args, probed_model, accelerator, xfact_dataset):
+    # Just train the LM head on the xfact dataset, mapping from counterfactual embeddings to the desired next token id.
+    loaded_data = DataLoader(xfact_dataset, shuffle=True)
+    lm_head = probed_model.lm.lm_head
+    optimizer = AdamW(lm_head.parameters(), lr=args.learning_rate)
+    # Prepare everything with our `accelerator`.
+    lm_head, optimizer, train_dataloader = accelerator.prepare(
+        lm_head, optimizer, loaded_data
+    )
+
+    loss_fn = CrossEntropyLoss()
+    for epoch in range(3):
+        print("Epoch", epoch)
+        lm_head.train()
+        running_loss = 0
+        for step, batch in enumerate(loaded_data):
+            embedding, label = batch
+            prediction = lm_head(embedding)
+            loss = loss_fn(prediction, label.view(-1))
+            running_loss += loss.detach().cpu().numpy().item()
+            accelerator.backward(loss)
+            optimizer.step()
+            optimizer.zero_grad()
+        print("Loss:\t", running_loss / len(loaded_data))
 
 def main():
     args = parse_args()
@@ -667,7 +694,7 @@ def main():
         probed_model.lm_mode = False
         xfact_dataset = _gen_xfacts(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
         print("Training with xfacts")
-        # TODO.
+        _xfact_training(args, probed_model, accelerator, xfact_dataset)
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(probed_model)
