@@ -555,7 +555,8 @@ def _gen_xfacts(args, probed_model, tokenizer, accelerator, raw_datasets):
         with torch.no_grad():
             outputs = probed_model(**batch)
         hidden_states = outputs.hidden_states[-1].detach()  # Take last ones before the linear layer.
-        s_prime = torch.Tensor([1]).long().cuda()  # FIXME
+        rand_int = torch.randint(low=0, high=3, size=(1,))  # To teach invariance, just create a random xfactual
+        s_prime = rand_int.long().cuda()
         z_prime = gen_counterfactual(hidden_states, probe, s_prime)
         # We generate input ids and xfactual embeddings for the whole sequence, but one has to decide what parts to
         # add to the dataset.
@@ -602,6 +603,36 @@ def _xfact_training(args, probed_model, accelerator, xfact_dataset):
             optimizer.step()
             optimizer.zero_grad()
         print("Loss:\t", running_loss / len(loaded_data))
+
+
+def _measure_ppl(args, probed_model, tokenizer):
+    probed_model.lm_mode = True
+    probed_model.eval()
+    probed_model.cuda()
+    max_length = probed_model.config.n_positions
+    stride = 1
+
+    data = load_dataset(args.lm_dataset_name, split='train')
+    encodings = tokenizer(data['text'], return_tensors="pt")
+
+    nlls = []
+    for i in tqdm(range(1, encodings.input_ids.size(1), stride)):
+        begin_loc = max(i + stride - max_length, 0)
+        end_loc = min(i + stride, encodings.input_ids.size(1))
+        trg_len = end_loc - i  # may be different from stride on last loop
+        input_ids = encodings.input_ids[:, begin_loc:end_loc].cuda()
+        target_ids = input_ids.clone()
+        target_ids[:, :-trg_len] = -100
+
+        with torch.no_grad():
+            outputs = probed_model(input_ids, labels=target_ids)
+            neg_log_likelihood = outputs[0] * trg_len
+
+        nlls.append(neg_log_likelihood)
+
+    ppl = torch.exp(torch.stack(nlls).sum() / end_loc)
+    print("ppl", ppl)
+
 
 def main():
     args = parse_args()
@@ -681,15 +712,18 @@ def main():
         classifier_model = GPT2ForSequenceClassification(copied)
         classifier_model.resize_token_embeddings(len(tokenizer))
         probed_model = GPT2ProbedCLM(lm_config, lm_model, classifier_model)
+    if args.eval_only:
+        _measure_ppl(args, probed_model, tokenizer)
+        return
     # Do the actual training
-    for iteration in range(2):
+    for iteration in range(10):
         print("Iteration number", iteration)
         print("Training probe")
         probed_model.lm_mode = False
         _train_probe(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
-        # print("Training LM")
-        # probed_model.lm_mode = True
-        # _train_lm(args, probed_model, tokenizer, accelerator, lm_raw_datasets)
+        print("Training LM")
+        probed_model.lm_mode = True
+        _train_lm(args, probed_model, tokenizer, accelerator, lm_raw_datasets)
         print("Generating xfacts")
         probed_model.lm_mode = False
         xfact_dataset = _gen_xfacts(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
