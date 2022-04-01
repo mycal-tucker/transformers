@@ -721,14 +721,17 @@ def main():
         print("Training probe")
         probed_model.lm_mode = False
         _train_probe(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
+        torch.cuda.empty_cache()
         print("Training LM")
         probed_model.lm_mode = True
         _train_lm(args, probed_model, tokenizer, accelerator, lm_raw_datasets)
+        torch.cuda.empty_cache()
         print("Generating xfacts")
         probed_model.lm_mode = False
         xfact_dataset = _gen_xfacts(args, probed_model, tokenizer, accelerator, probe_raw_datasets)
         print("Training with xfacts")
         _xfact_training(args, probed_model, accelerator, xfact_dataset)
+        torch.cuda.empty_cache()
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(probed_model)
