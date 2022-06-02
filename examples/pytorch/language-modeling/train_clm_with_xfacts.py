@@ -28,6 +28,7 @@ import copy
 import logging
 import math
 import os
+import numpy as np
 import random
 from itertools import chain
 from pathlib import Path
@@ -279,6 +280,26 @@ def _load_dataset(args, dataset_name, dataset_config_name, use_file=False):
     return raw_datasets
 
 
+def get_group_text_fn(block_size):
+    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
+    def group_texts(examples):
+        # Concatenate all texts.
+        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+        # customize this part to your needs.
+        if total_length >= block_size:
+            total_length = (total_length // block_size) * block_size
+        # Split by chunks of max_len.
+        result = {
+            k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
+            for k, t in concatenated_examples.items()
+        }
+        result["labels"] = result["input_ids"].copy()
+        return result
+    return group_texts
+
+
 def _train_lm(args, probed_model, tokenizer, accelerator, raw_datasets):
     # Preprocessing the datasets.
     # First we tokenize all the texts.
@@ -314,23 +335,6 @@ def _train_lm(args, probed_model, tokenizer, accelerator, raw_datasets):
             )
         block_size = min(args.block_size, tokenizer.model_max_length)
 
-    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-    def group_texts(examples):
-        # Concatenate all texts.
-        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
-        total_length = len(concatenated_examples[list(examples.keys())[0]])
-        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
-        # customize this part to your needs.
-        if total_length >= block_size:
-            total_length = (total_length // block_size) * block_size
-        # Split by chunks of max_len.
-        result = {
-            k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
-            for k, t in concatenated_examples.items()
-        }
-        result["labels"] = result["input_ids"].copy()
-        return result
-
     # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
     # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
     # to preprocess.
@@ -340,7 +344,7 @@ def _train_lm(args, probed_model, tokenizer, accelerator, raw_datasets):
 
     with accelerator.main_process_first():
         lm_datasets = tokenized_lm_datasets.map(
-            group_texts,
+            get_group_text_fn(block_size),
             batched=True,
             num_proc=args.preprocessing_num_workers,
             load_from_cache_file=not args.overwrite_cache,
@@ -609,29 +613,28 @@ def _measure_ppl(args, probed_model, tokenizer):
     probed_model.lm_mode = True
     probed_model.eval()
     probed_model.cuda()
-    max_length = probed_model.config.n_positions
-    stride = 1
 
     data = load_dataset(args.lm_dataset_name, split='train')
-    encodings = tokenizer(data['text'], return_tensors="pt")
+    def tokenize_function(examples):
+        text_column_name = 'text'
+        tokenized_batch = tokenizer(examples[text_column_name])
+        return tokenized_batch
+    encodings = data.map(
+        tokenize_function,
+        batched=True,
+        num_proc=args.preprocessing_num_workers,
+        load_from_cache_file=not args.overwrite_cache,
+        desc="Running tokenizer on dataset",
+    )
 
     nlls = []
-    for i in tqdm(range(1, encodings.input_ids.size(1), stride)):
-        begin_loc = max(i + stride - max_length, 0)
-        end_loc = min(i + stride, encodings.input_ids.size(1))
-        trg_len = end_loc - i  # may be different from stride on last loop
-        input_ids = encodings.input_ids[:, begin_loc:end_loc].cuda()
-        target_ids = input_ids.clone()
-        target_ids[:, :-trg_len] = -100
-
+    for sentence in encodings['input_ids']:
+        input_ids = torch.Tensor(sentence).cuda().long()
         with torch.no_grad():
-            outputs = probed_model(input_ids, labels=target_ids)
-            neg_log_likelihood = outputs[0] * trg_len
-
-        nlls.append(neg_log_likelihood)
-
-    ppl = torch.exp(torch.stack(nlls).sum() / end_loc)
-    print("ppl", ppl)
+            outputs = probed_model(input_ids, labels=input_ids)
+            neg_log_likelihood = outputs[0]
+        nlls.append(neg_log_likelihood.cpu().numpy())
+    print(np.mean(nlls))
 
 
 def main():
@@ -716,7 +719,7 @@ def main():
         _measure_ppl(args, probed_model, tokenizer)
         return
     # Do the actual training
-    for iteration in range(10):
+    for iteration in range(2):
         print("Iteration number", iteration)
         print("Training probe")
         probed_model.lm_mode = False
@@ -739,7 +742,6 @@ def main():
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
         torch.save(unwrapped_model, args.output_dir + "/model.pt")
-
 
 
 if __name__ == "__main__":

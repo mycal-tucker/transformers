@@ -24,6 +24,7 @@ import torch
 import torch.utils.checkpoint
 from packaging import version
 from torch import nn
+import torch.nn.functional as F
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 if version.parse(torch.__version__) >= version.parse("1.6"):
@@ -1333,8 +1334,7 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.transformer = GPT2Model(config)
-        self.score = nn.Linear(config.n_embd, self.num_labels, bias=False)
-        self.classifier = MeanClassifier(self.score)
+        self.classifier = PaddedProbe(50, config.n_embd, self.num_labels)
 
         # Model parallel
         self.model_parallel = False
@@ -1387,8 +1387,6 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
-        # logits = self.score(hidden_states)
-
 
         if input_ids is not None:
             batch_size, sequence_length = input_ids.shape[:2]
@@ -1409,8 +1407,8 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
                     f"{self.__class__.__name__} will not detect padding tokens in `inputs_embeds`. Results may be "
                     f"unexpected if using padding tokens in conjunction with `inputs_embeds.`"
                 )
-        # Normally, we pull out the last token and use logits from that.
-        # But I'm experimenting with just using the mean.
+        # Normally, we pull out the last token and use logits from that, but I'm passing in all the hidden states
+        # into the classifier.
         # pooled_logits = logits[torch.arange(batch_size, device=self.device), sequence_lengths]
         pooled_logits = self.classifier(hidden_states)
 
@@ -1449,14 +1447,28 @@ class GPT2ForSequenceClassification(GPT2PreTrainedModel):
         )
 
 
-class MeanClassifier(nn.Module):
-    def __init__(self, linear_layer):
+class PaddedProbe(nn.Module):
+    def __init__(self, max_len, embed_dim, output_dim):
         super().__init__()
-        self.layer = linear_layer
+        self.max_len = max_len
+        self.embed_dim = embed_dim
+        self.hidden_dim = 16
+        self.embed_layer = nn.Linear(embed_dim, self.hidden_dim)
+        self.layer = nn.Linear(max_len * self.hidden_dim, output_dim)
 
     def forward(self, x):
-        mean = x.mean(dim=1)
-        return self.layer(mean)
+        # Pad the embeddings before concatenation. Shape is (batch size x num embeddings x embedding_dim)
+        num_tokens = x.shape[1]
+        if num_tokens > self.max_len:
+            print("Specified max num tokens as " + str(self.max_len) + " but got " + str(num_tokens))
+            # Padding takes care of truncation anyway, so don't worry about that.
+        padded_x = F.pad(x, (0, 0, 0, self.max_len - num_tokens), 'constant', 0)
+        # TODO: add dropout at some point.
+        # Embed into lower dimension
+        embedded = self.embed_layer(padded_x)
+        flattened = torch.flatten(embedded, start_dim=1)
+        logits = self.layer(flattened)
+        return logits
 
 
 @add_start_docstrings(
