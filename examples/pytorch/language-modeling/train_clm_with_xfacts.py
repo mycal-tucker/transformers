@@ -559,22 +559,28 @@ def _gen_xfacts(args, probed_model, tokenizer, accelerator, raw_datasets):
         with torch.no_grad():
             outputs = probed_model(**batch)
         hidden_states = outputs.hidden_states[-1].detach()  # Take last ones before the linear layer.
-        rand_int = torch.randint(low=0, high=3, size=(1,))  # To teach invariance, just create a random xfactual
-        s_prime = rand_int.long().cuda()
-        z_prime = gen_counterfactual(hidden_states, probe, s_prime)
-        # We generate input ids and xfactual embeddings for the whole sequence, but one has to decide what parts to
-        # add to the dataset.
-        # E.g., doing the whole sequence is one option, but that's odd because it removes all info.
-        # So, here we just use the last element (well, one earlier to not just do punctuation)
-        # Old version for the whole sequence
-        # cached_input_ids.append(batch['input_ids'].view((-1, 1)))
-        # cached_z_primes.append(torch.squeeze(z_prime, dim=0))
-        # Minus 2 for the penultimate token.
-        cached_input_ids.append(batch['input_ids'][0, -2].view((-1, 1)))
-        cached_z_primes.append(z_prime[0, -3].view(1, -1))  # Shift z-prime by one earlier to allow prediction.
-        # Debugging tool prints out the token being added to the dataset
-        # print("Decoding token", tokenizer.decode(cached_input_ids[-1][0]))
-        completed_steps += 1
+        # FIXME: not just last layer (see above)
+        for targ_s in range(3):
+            s_prime = torch.unsqueeze(torch.tensor(targ_s), 0).cuda()
+            z_prime = gen_counterfactual(hidden_states, probe, s_prime)
+            # We generate input ids and xfactual embeddings for the whole sequence, but one has to decide what parts to
+            # add to the dataset. Regardless of the option, remember to shift!
+            # Here's the whole sequence.
+            squeezed_z = torch.squeeze(z_prime, dim=0)
+            shifted_z = squeezed_z[:-1, :].contiguous()
+            labels = batch['input_ids'].view((-1, 1))
+            shifted_labels = labels[1:, ...].contiguous()
+            cached_input_ids.append(shifted_labels)
+            cached_z_primes.append(shifted_z)
+            # Or one can focus only on specific tokens
+            # Minus 2 for the penultimate token.
+            # cached_input_ids.append(batch['input_ids'][0, -2].view((-1, 1)))
+            # cached_z_primes.append(z_prime[0, -3].view(1, -1))  # Shift z-prime by one earlier to allow prediction.
+            # Debugging tool prints out the token being added to the dataset
+            # print("Decoding token", tokenizer.decode(cached_input_ids[-1][0]))
+            completed_steps += 1
+            if completed_steps >= args.max_train_steps:
+                break
         if completed_steps >= args.max_train_steps:
             break
     stacked_z_primes = torch.vstack(cached_z_primes)
@@ -614,7 +620,7 @@ def _measure_ppl(args, probed_model, tokenizer):
     probed_model.eval()
     probed_model.cuda()
 
-    data = load_dataset(args.lm_dataset_name, split='train')
+    data = load_dataset(args.lm_dataset_name, data_files='suite.txt', split='train')
     def tokenize_function(examples):
         text_column_name = 'text'
         tokenized_batch = tokenizer(examples[text_column_name])
@@ -626,14 +632,33 @@ def _measure_ppl(args, probed_model, tokenizer):
         load_from_cache_file=not args.overwrite_cache,
         desc="Running tokenizer on dataset",
     )
+    # And parse out the specific words we want to have the indices of
+    special_idxs = []
+    with open(args.lm_dataset_name + '/surprisal_tokens.txt', 'r') as f:
+        for word, sentence in zip(f, encodings['input_ids']):
+            found_match = False
+            for i, tok in enumerate(sentence):
+                decoded = tokenizer.decode(tok).strip()
+                if word.startswith(decoded):
+                    special_idxs.append(i - 1)  # Shift by 1 to get the surprisal for prediction at the earlier step.
+                    found_match = True
+                    break
+            assert found_match, "Could not find matching token for word " + word
 
     nlls = []
-    for sentence in encodings['input_ids']:
+    for sentence, token_idx in zip(encodings['input_ids'], special_idxs):
         input_ids = torch.Tensor(sentence).cuda().long()
         with torch.no_grad():
             outputs = probed_model(input_ids, labels=input_ids)
-            neg_log_likelihood = outputs[0]
-        nlls.append(neg_log_likelihood.cpu().numpy())
+            neg_log_likelihood = outputs.loss
+            # In addition to the overal surprisal, print out the surprisal for each token, which allows us to peek
+            # into specific words.
+            shift_logits = outputs.logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous()
+            loss_fct = CrossEntropyLoss(reduction='none')
+            surprisals = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            print('surprisals', surprisals[token_idx])
+        nlls.append(surprisals[token_idx].cpu().numpy())
     print(np.mean(nlls))
 
 
@@ -716,7 +741,10 @@ def main():
         classifier_model.resize_token_embeddings(len(tokenizer))
         probed_model = GPT2ProbedCLM(lm_config, lm_model, classifier_model)
     if args.eval_only:
-        _measure_ppl(args, probed_model, tokenizer)
+        for test_suite in ['data/mycal_gender_stereotypical', 'data/mycal_gender_counter']:
+            args.lm_dataset_name = test_suite
+            print("Test suite", test_suite)
+            _measure_ppl(args, probed_model, tokenizer)
         return
     # Do the actual training
     for iteration in range(2):

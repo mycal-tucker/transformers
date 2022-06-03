@@ -185,6 +185,7 @@ def parse_args():
         "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
     )
     parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
+    parser.add_argument("--eval_only", action="store_true", help="Only do evaluation.")
     args = parser.parse_args()
 
     # Sanity checks
@@ -468,21 +469,22 @@ def main():
     completed_steps = 0
 
     for epoch in range(args.num_train_epochs):
-        model.train()
-        for step, batch in enumerate(train_dataloader):
-            outputs = model(**batch)
-            loss = outputs.loss
-            loss = loss / args.gradient_accumulation_steps
-            accelerator.backward(loss)
-            if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
+        if not args.eval_only:
+            model.train()
+            for step, batch in enumerate(train_dataloader):
+                outputs = model(**batch)
+                loss = outputs.loss
+                loss = loss / args.gradient_accumulation_steps
+                accelerator.backward(loss)
+                if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
 
-            if completed_steps >= args.max_train_steps:
-                break
+                if completed_steps >= args.max_train_steps:
+                    break
 
         model.eval()
         losses = []
